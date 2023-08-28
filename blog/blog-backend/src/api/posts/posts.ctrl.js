@@ -1,144 +1,40 @@
-//배열에 값을 저장
-/*
-let postId = 1; //초기값
+import Post from '../../models/post';
+import mongoose from 'mongoose';
+import Joi from '../../../node_modules/joi/lib/index';
 
-const posts = [
-    {
-        id: 1,
-        title: '제목',
-        body: '내용',
-    }
-]
-*/
+const { ObjectId } = mongoose.Types;
 
-/* 포스트 작성
-POST /api/posts
-{title, body}
-*/
-
-/*
-export const write = ctx => {
-    const { title, body } = ctx.request.body; //REST API의 request body 조회
-    postId += 1;
-    const post = {id:postId, title, body};
-    posts.push(post);
-    ctx.body = post;
-}
-*/
-
-/* 포스트 목록 조회
-GET /api/posts
-*/
-
-/*
-export const list = ctx => {
-    ctx.body = posts;
-}
-*/
-
-/* 특정 포스트 조회
-GET /api/posts/:id
-*/
-
-/*
-export const read = ctx => {
+export const checkObjectId = (ctx, next) => {
     const {id} = ctx.params;
-    //id가 문자열이므로 파라미터를 숫자로 변환하거나 비교할 p.id값을 문자열로 변경
-    const post = posts.find(p => p.id.toString() === id);
-    if(!post) {
-        ctx.status = 404;
-        ctx.body = {
-            message: '포스트가 존재하지 않습니다.'
-        }
+    if(!ObjectId.isValid(id)) {
+        ctx.status = 400;
         return;
     }
-    ctx.body = post;
+    return next();
 }
-*/
-
-/* 특정 포스트 제거
-DELETE /api/posts/:id
-*/
-
-/*
-export const remove = ctx => {
-    const {id} = ctx.params;
-    //해당 id를 가진 post가 몇번째인지 확인
-    const index = posts.findIndex(p => p.id.toString() === id);
-    if (index === -1) { //없으면
-        ctx.status = 404;
-        ctx.body = {
-            message: '포스트가 존재하지 않습니다.',
-        }
-        return;
-    }
-    //index번째 아이템 제거
-    posts.splice(index, 1);
-    ctx.status = 204; //No content
-}
-*/
-
-/* 포스트 수정, 교체
-PUT /api/posts/:id
-{ title, body }
-*/
-
-/*
-export const replace = ctx => {
-    const {id} = ctx.params
-    const index = posts.findIndex(p => p.id.toString() === id);
-    if(index === -1){
-        ctx.status = 404;
-        ctx.body = {
-            message: '포스트가 존재하지 않습니다.'
-        }
-        return;
-    }
-    //전체 객체 덮어씌움
-    posts[index] = {
-        id,
-        ...ctx.request.body,
-    }
-    ctx.body = posts[index];
-}
-*/
-
-/* 포스트 수정(특정 필드 변경)
-PATCH /api/posts/:id
-{ title, body }
-*/
-
-/*
-export const update = ctx => {
-    const {id} = ctx.params;
-    const index = posts.findIndex(p => p.id.toString() === id);
-    if(index === -1){
-        ctx.status = 404;
-        ctx.body = {
-            message: '포스트가 존재하지 않습니다.'
-        }
-        return;
-    }
-    //기존 값에 정보를 덮어씌움
-    posts[index] = {
-        ...posts[index],
-        ...ctx.request.body,
-    };
-    ctx.body = posts[index]
-}
-*/
-
-//MongoDB에 저장
-import Post from "../../models/post";
 
 export const write = async ctx => {
-    const {title, body, tags} = ctx.request.body;
+    const schema = Joi.object().keys({
+        title: Joi.string().required(),
+        body: Joi.string().required(),
+        tags: Joi.array()
+            .items(Joi.string())
+            .required(),
+    })
+
+    const result = schema.validate(ctx.request.body);
+    if(result.error) {
+        ctx.status = 400;
+        ctx.body = result.error;
+        return;
+    }
+
+    const { title, body, tags } = ctx.request.body;
     const post = new Post({
         title,
         body,
         tags,
-    });
-
+    })
     try {
         await post.save();
         ctx.body = post;
@@ -147,10 +43,84 @@ export const write = async ctx => {
     }
 };
 
-export const list = ctx => {};
+export const list = async ctx => {
+    const page = parseInt(ctx.query.page || '1', 10);
+    if (page < 1) {
+        ctx.status = 400;
+        return;
+    }
+    try{
+        const posts = await Post.find().sort({_id:-1}).limit(10).skip((page - 1)*10).exec(); /*역순 10개 페이지구현 */
+        const postCount = await Post.countDocuments().exec();
+        ctx.set('Last-page', Math.ceil(postCount/10)); //커스텀 HTTP헤더
+        ctx.body = posts.map(post => post.toJSON()).map(post => ({
+            ...post,
+            body: post.body.length < 200 ? post.body : `${post.body.slice(0,200)}...`,
+        })) //200자 이상이면 ...으로 줄임
+        /*
+        const posts = await Post.find().sort({_id:-1}).limit(10).skip((page-1)*10).lean().exec();
+        ctx.body = posts.map(post => ({
+            ...post,
+            body: post.body.length < 200 ? post.body : `${post.body.slice(0,200)}...`,
+        }));
 
-export const read = ctx => {};
+        lean()을 통해서 처음부터 JSON형태로 조회 가능
+        */
+    } catch (e) {
+        ctx.throw(500, e);
+    }
+};
 
-export const remove = ctx => {};
+export const read = async ctx => {
+    const { id } = ctx.params;
+    try {
+        const post = await Post.findById(id).exec();
+        if(!post){
+            ctx.status = 404;
+            return;
+        }
+        ctx.body = post;
+    } catch(e) {
+        ctx.throw(500, e);
+    }
+};
 
-export const update = ctx => {};
+export const remove = async ctx => {
+    const { id } = ctx.params;
+    try {
+        await Post.findByIdAndRemove(id).exec();
+        ctx.status = 204;
+    } catch (e){
+        ctx.throw(500, e)
+    }
+};
+
+export const update = async ctx => {
+    const { id } = ctx.params;
+
+    const schema = Joi.object().keys({
+        title: Joi.string(),
+        body: Joi.string(),
+        tags: Joi.array().items(Joi.string()),
+    });
+
+    const result = schema.validate(ctx.request.body);
+    if(result.error){
+        ctx.status = 400;
+        ctx.body = result.error;
+        return;
+    }
+
+    try {
+        const post = await Post.findByIdAndUpdate(id, ctx.request.body, {
+            new: true,
+        }).exec();
+        if(!post){
+            ctx.status = 404;
+            return
+        }
+        ctx.body = post;
+    } catch (e) {
+        ctx.throw(500, e);
+    }
+};
